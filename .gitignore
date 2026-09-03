@@ -1,0 +1,39 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.Python
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Environment & secrets
+.env
+*.env
+backend/.env
+
+# Cache & data (通常很大，不建議上傳)
+cache/
+**/cache/
+*.pkl
+*.pbf
+*.graphml
+data/cache/
+backend/data/cache/
+backend/backend/data/
+
+# IDE & OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Flutter / Dart
+frontend/.dart_tool/
+frontend/build/
+frontend/.flutter-plugins
+frontend/.flutter-plugins-dependencies

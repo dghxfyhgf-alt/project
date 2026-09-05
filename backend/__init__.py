@@ -1,0 +1,1 @@
+"""Macau adaptive navigation backend."""

@@ -13,6 +13,7 @@ def download_macau_network():
     print(f"下載完成。節點數: {graph.number_of_nodes()}, 邊數: {graph.number_of_edges()}")
     
     output_dir = "data"
+    os.makedirs(output_dir, exist_ok=True)
     output_path = os.path.join(output_dir, "macau_network.graphml")
     
     print(f"正在儲存至 {output_path}...")

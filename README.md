@@ -11,14 +11,13 @@ A Python (FastAPI) + Flutter adaptive travel navigation system for Macau with:
 ```
 ├── backend/
 │   ├── main.py              # FastAPI application with REST endpoints
-│   ├── graph_builder.py     # OSMnx graph construction with elevation & bus data
-│   ├── router.py            # A* routing with adaptive cost functions
-│   ├── test_system.py       # Integration tests
-│   └── requirements.txt     # Python dependencies
+│   ├── graph_builder.py     # OSMnx graph loading and offline fallback graph
+│   ├── router.py            # Adaptive shortest-path routing
+│   ├── test_system.py       # Backend smoke tests
+│   └── requirements.txt     # Backend dependencies
 ├── frontend/
 │   ├── pubspec.yaml         # Flutter dependencies
-│   └── lib/
-│       └── main.dart        # Flutter UI with map & chat interface
+│   └── lib/main.dart        # Flutter map, route and chat interface
 ```
 
 ## Backend API Endpoints
@@ -29,6 +28,8 @@ A Python (FastAPI) + Flutter adaptive travel navigation system for Macau with:
 | `/route/plan` | POST | Plan route with preferences |
 | `/ai/parse_intent` | POST | Parse natural language to structured params |
 | `/route/update` | POST | Dynamic re-routing for GPS deviation/weather |
+| `/geocode/search` | GET | Nominatim place search proxy |
+| `/geocode/reverse` | GET | Nominatim reverse geocoding proxy |
 
 ### Route Plan Request
 ```json
@@ -68,12 +69,21 @@ Response:
 ## Running the Backend
 
 ```bash
-cd backend
 pip install -r requirements.txt
 python -m uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-The API will be available at `http://localhost:8000`
+The API will be available at `http://localhost:8000`. The supported entry
+points are `uvicorn main:app` from the repository root and
+`uvicorn backend.main:app` from the repository root.
+
+If `data/macau_network.graphml` is unavailable, the backend automatically uses
+a small offline fallback graph so that the API and frontend can still be
+developed and tested. Generate the real Macau graph with:
+
+```bash
+python map_downloader.py
+```
 
 ## Running the Frontend
 
@@ -115,8 +125,7 @@ Note: The frontend connects to `http://10.0.2.2:8000` (Android emulator localhos
 ## Testing
 
 ```bash
-cd backend
-python test_system.py
+python -m pytest backend
 ```
 
 ## Configuration

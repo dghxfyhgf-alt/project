@@ -1,6 +1,2 @@
-osmnx>=1.9.0
-networkx>=3.0
-fastapi>=0.110.0
-uvicorn>=0.29.0
-pydantic>=2.0
-geojson>=3.0
+-r backend/requirements.txt
+pytest>=8.0

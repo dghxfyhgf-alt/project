@@ -4,7 +4,7 @@ import os
 
 def download_macau_network():
     place_name = "Macau"
-    network_type = "all"
+    network_type = "walk"
     
     print(f"正在下載 {place_name} 的道路網路數據 (network_type='{network_type}')...")
     

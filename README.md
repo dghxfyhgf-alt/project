@@ -30,6 +30,7 @@ A Python (FastAPI) + Flutter adaptive travel navigation system for Macau with:
 | `/route/update` | POST | Dynamic re-routing for GPS deviation/weather |
 | `/geocode/search` | GET | Nominatim place search proxy |
 | `/geocode/reverse` | GET | Nominatim reverse geocoding proxy |
+| `/bus/routes` | GET | DSAT public bus route metadata proxy |
 
 ### Route Plan Request
 ```json
@@ -77,13 +78,99 @@ The API will be available at `http://localhost:8000`. The supported entry
 points are `uvicorn main:app` from the repository root and
 `uvicorn backend.main:app` from the repository root.
 
-If `data/macau_network.graphml` is unavailable, the backend automatically uses
-a small offline fallback graph so that the API and frontend can still be
-developed and tested. Generate the real Macau graph with:
+If `data/macau_network.graphml` is unavailable, the backend reads the PBF file
+configured by `OSM_PBF_PATH` and caches it as GraphML. The Windows launcher
+automatically uses `%USERPROFILE%\Downloads\macau-260904.osm.pbf` when present.
+If neither file is available, the backend uses a small offline fallback graph
+so that the API and frontend can still be developed and tested. Generate the
+real Macau graph with:
 
 ```bash
 python map_downloader.py
 ```
+
+### DEM terrain support
+
+Place a local GeoTIFF DEM at `data/dem.tif`, or set the `DEM_PATH`
+environment variable to another GeoTIFF path. On startup, the backend samples
+the DEM along each road edge and adds elevation gain/loss, average slope,
+maximum slope, and stair metadata to the graph. OSM's `highway=steps` tag is
+treated as stairs independently of DEM coverage.
+
+Route profiles are `normal`, `avoid_stairs`, `luggage`, `stroller`, and
+`wheelchair`. For example:
+
+```json
+{
+  "start_lat": 22.192,
+  "start_lon": 113.539,
+  "end_lat": 22.188,
+  "end_lon": 113.535,
+  "profile": "wheelchair"
+}
+```
+
+`GET /health` reports whether the configured DEM was loaded through the
+`dem_loaded` field. Without a DEM, the API remains usable but does not claim
+that its slope values are measured terrain values.
+
+The recommended data flow is:
+
+1. The CASEarth dataset `67bfc5e083917d6a7fa5b8ea` exposes `aomen.tif`
+   through its file list API. The file download requires a CASEarth account.
+2. Set `CASEARTH_USERNAME` or pass `--username` and run
+   `python download_dem.py`; the script saves the GeoTIFF as `data/dem.tif`.
+3. Run `python map_downloader.py` to create the OSM walking graph.
+4. Start the API and confirm `/health` reports `dem_loaded: true`.
+
+The downloader does not store passwords or tokens. If CASEarth requires an
+authenticated browser session beyond the username parameter, download
+`aomen.tif` through the portal and copy it to `data/dem.tif` instead.
+
+OSM attributes such as `highway=steps`, `incline`, `surface`, and walking
+path types are normalized before routing. DEM provides elevation and slope;
+OSM remains the authoritative source for explicit stairs.
+
+### DSAT bus data
+
+The DSAT Macau bus website exposes route and station data through its web
+client. The backend provides `/bus/routes` as a small public-data adapter.
+The adapter does not bypass DSAT HUID/token checks, CAPTCHA, login, or other
+access controls. If DSAT returns a non-`000` status, the API reports that the
+web session is required instead of using synthetic or stale bus data.
+This endpoint is route metadata only; real walking + bus routing still
+requires an authorized, stable timetable/GTFS feed.
+
+### Routing algorithm
+
+The route engine uses a bidirectional genetic search. A bidirectional graph
+search first creates a valid seed path from both endpoints; the genetic phase
+then evolves valid path chromosomes using terrain-aware fitness, crossover at
+shared nodes, and mutation through alternative graph edges. Invalid paths,
+stairs, and slopes that violate the selected profile are rejected. This
+replaces the previous direct NetworkX shortest-path call while preserving
+deterministic results through a fixed random seed.
+
+Route requests are projected to the nearest walkable OSM road edge before
+searching, rather than being reduced directly to the nearest graph node.
+Disconnected OSM components are reduced to the largest walkable component at
+load time. If no connected path exists, the API returns a specific
+connectivity error instead of a misleading zero-length route.
+
+### One-click desktop test (Windows)
+
+Double-click `run_desktop_test.bat` in the repository root. It starts the
+backend, waits for `/health`, and opens the Flutter Windows desktop app. The
+script can generate the Flutter Windows runner if it is missing. Python,
+Flutter, and Visual Studio C++ desktop tooling must be installed.
+
+After the first build, the launcher opens the existing Release executable
+without running `flutter pub get` or rebuilding it. It also reuses an already
+healthy backend instead of starting a duplicate process.
+
+The Flutter API URL is configurable with `API_BASE_URL`. Desktop uses
+`http://127.0.0.1:8000`; Android Emulator should use
+`http://10.0.2.2:8000`.
 
 ## Running the Frontend
 

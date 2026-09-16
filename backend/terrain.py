@@ -113,7 +113,7 @@ def validate_dem(dem_path: Path) -> dict[str, Any]:
             "crs": str(dataset.crs) if dataset.crs else None,
             "width": dataset.width,
             "height": dataset.height,
-            "resolution": tuple(round(value, 3) for value in dataset.res),
+            "resolution": tuple(round(value, 8) for value in dataset.res),
             "nodata": dataset.nodata,
             "bounds": tuple(round(value, 6) for value in dataset.bounds),
         }

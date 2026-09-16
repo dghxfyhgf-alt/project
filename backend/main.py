@@ -1,18 +1,36 @@
 from __future__ import annotations
 
 import os
+import io
 from pathlib import Path
 from typing import Any
 
 import httpx
 import networkx as nx
+import numpy as np
+import rasterio
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import Response
+from PIL import Image
 from pydantic import BaseModel, Field
 
 from .graph_builder import load_graph
-from .bus_data import DsatBusClient
+from .bus_data import DsatBusClient, local_bus_routes, local_bus_stops
+from .cultural_data import MACAU_BOUNDARY_PATH, load_cultural_places
+from .llm import llm_enabled, select_tour
 from .router import haversine_m, shortest_route
 from .terrain import enrich_graph_with_dem, validate_dem
+from .tour import (
+    TourLeg,
+    TourPlan,
+    TourRequest,
+    TourRouteRequest,
+    TourRouteResponse,
+    TourStop,
+    candidate_pois,
+    parse_tour_intent,
+    POIS,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 GRAPH_PATH = Path(os.getenv("GRAPH_PATH", ROOT / "data" / "macau_network.graphml"))
@@ -24,6 +42,7 @@ app = FastAPI(title="Macau Adaptive Navigation API", version="2.0.0")
 graph: nx.MultiDiGraph = load_graph(GRAPH_PATH, PBF_PATH)
 dem_metadata = validate_dem(DEM_PATH)
 dem_loaded = enrich_graph_with_dem(graph, DEM_PATH)
+cultural_places = load_cultural_places()
 
 
 class RouteRequest(BaseModel):
@@ -247,7 +266,31 @@ async def health() -> dict[str, Any]:
         "dem_loaded": dem_loaded,
         "dem_path": str(DEM_PATH),
         "dem_metadata": dem_metadata,
+        "cultural_places_loaded": len(cultural_places),
+        "cultural_places_endpoint": True,
     }
+
+
+@app.get("/terrain/overlay.png")
+async def terrain_overlay() -> Response:
+    """Render the local DEM as a transparent elevation overlay for Flutter."""
+    if not dem_loaded or not DEM_PATH.exists():
+        raise HTTPException(status_code=404, detail="DEM 地形图层尚未加载。")
+    with rasterio.open(DEM_PATH) as dataset:
+        values = dataset.read(1, masked=True).astype("float32")
+        valid = values.compressed()
+        if valid.size == 0:
+            raise HTTPException(status_code=422, detail="DEM 没有有效高程值。")
+        low, high = float(valid.min()), float(valid.max())
+        normalized = np.ma.filled((values - low) / max(high - low, 1.0), 0.0)
+        rgba = np.zeros((*normalized.shape, 4), dtype=np.uint8)
+        rgba[..., 0] = (normalized * 255).astype(np.uint8)
+        rgba[..., 1] = ((1.0 - normalized) * 180 + 40).astype(np.uint8)
+        rgba[..., 2] = ((1.0 - normalized) * 100 + 80).astype(np.uint8)
+        rgba[..., 3] = np.where(values.mask, 0, 105).astype(np.uint8)
+        output = io.BytesIO()
+        Image.fromarray(rgba, mode="RGBA").save(output, format="PNG", optimize=True)
+    return Response(content=output.getvalue(), media_type="image/png", headers={"Cache-Control": "public, max-age=3600"})
 
 
 @app.post("/route/plan")
@@ -308,10 +351,250 @@ async def geocode_reverse(lat: float = Query(..., ge=-90, le=90), lon: float = Q
 
 @app.get("/bus/routes")
 async def bus_routes(language: str = Query("zh_tw", pattern="^(zh_tw|zh_cn|en|pt)$")) -> dict[str, Any]:
-    """Expose public DSAT route metadata without pretending it is multimodal routing."""
+    """Return the local supplied snapshot, with DSAT live data as an explicit fallback."""
+    try:
+        routes = local_bus_routes()
+        return {
+            "source": "local_snapshot",
+            "route_count": len(routes),
+            "routes": routes,
+            "warning": "公交快照由用户提供；不是实时车辆位置。",
+        }
+    except (FileNotFoundError, ValueError):
+        pass
     try:
         return DsatBusClient().route_list(language)
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"DSAT 公交服务暂时不可用：{exc}") from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/bus/stops")
+async def bus_stops() -> dict[str, Any]:
+    try:
+        stops = local_bus_stops()
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {
+        "source": "local_snapshot",
+        "stop_count": len(stops),
+        "stops": stops,
+        "warning": "站点名称和编号来自用户提供的 Excel 快照。",
+    }
+
+
+@app.get("/cultural-places")
+async def cultural_places_endpoint(
+    area: str = Query("all", pattern="^(all|macau|nearby)$"),
+    category: str | None = Query(None, max_length=50),
+) -> dict[str, Any]:
+    places = cultural_places
+    if area != "all":
+        places = [place for place in places if place["area_status"] == area]
+    if category:
+        places = [
+            place
+            for place in places
+            if category in {
+                place.get("tourism"),
+                place.get("amenity"),
+                place.get("historic"),
+                place.get("heritage"),
+            }
+        ]
+    return {
+        "source": "HOT OSM cultural_places snapshot",
+        "snapshot": "2026-08-07",
+        "license": "ODbL",
+        "count": len(places),
+        "boundary_mode": "official_file" if MACAU_BOUNDARY_PATH else "fallback_approximation",
+        "warning": None
+        if MACAU_BOUNDARY_PATH
+        else "请配置 MACAU_BOUNDARY_PATH 使用官方澳门行政边界；当前边界为保守近似范围。",
+        "places": places,
+    }
+
+
+@app.post("/ai/plan_tour", response_model=TourPlan)
+async def plan_tour(request: TourRequest) -> TourPlan:
+    purpose, categories, parsed_minutes, parsed_max_stops = parse_tour_intent(request.message)
+    available_minutes = request.available_minutes or parsed_minutes
+    max_stops = min(request.max_stops, parsed_max_stops)
+    if request.start_lat is None or request.start_lon is None:
+        return TourPlan(
+            intent="plan_tour",
+            purpose=purpose,
+            categories=categories,
+            stops=[],
+            legs=[],
+            total_distance_m=0,
+            total_duration_minutes=0,
+            needs_clarification=True,
+            clarification_question="请提供起点，或在地图上选择起点。",
+        )
+
+    warnings: list[str] = []
+    source = "rules"
+    if llm_enabled():
+        try:
+            selection = await select_tour(
+                request.message,
+                available_minutes,
+                max_stops,
+                request.prefer_bus,
+                request.profile,
+                POIS,
+            )
+            poi_by_id = {poi.id: poi for poi in POIS}
+            selected_ids = list(dict.fromkeys(selection.stop_ids))[:max_stops]
+            pois = [poi_by_id[stop_id] for stop_id in selected_ids]
+            purpose = selection.purpose
+            categories = selection.categories or categories
+            stay_overrides = {
+                stop_id: max(5, min(240, minutes))
+                for stop_id, minutes in selection.stay_minutes.items()
+                if stop_id in poi_by_id
+            }
+            reason_overrides = {
+                stop_id: reason[:500]
+                for stop_id, reason in selection.reasons.items()
+                if stop_id in poi_by_id
+            }
+            source = "llm"
+        except (httpx.HTTPError, KeyError, ValueError) as exc:
+            warnings.append(f"LLM 规划暂时不可用，已切换为本地规划：{exc}")
+            pois = candidate_pois(categories, max_stops)
+            stay_overrides = {}
+            reason_overrides = {}
+    else:
+        pois = candidate_pois(categories, max_stops)
+        stay_overrides = {}
+        reason_overrides = {}
+    stops = [
+        TourStop(
+            id=poi.id,
+            name=poi.name,
+            latitude=poi.latitude,
+            longitude=poi.longitude,
+            category=poi.category,
+            stay_minutes=stay_overrides.get(poi.id, poi.stay_minutes),
+            reason=reason_overrides.get(poi.id, poi.reason),
+        )
+        for poi in pois
+    ]
+    legs: list[TourLeg] = []
+    total_distance = 0.0
+    total_duration = 0.0
+    current = (request.start_lat, request.start_lon)
+    current_id = "start"
+    for stop in stops:
+        distance = haversine_m(current, (stop.latitude, stop.longitude))
+        duration = distance / (25 / 3.6 if request.prefer_bus else 5 / 3.6) / 60
+        legs.append(TourLeg(
+            start_stop_id=current_id,
+            end_stop_id=stop.id,
+            distance_m=distance,
+            duration_minutes=duration,
+            mode="bus" if request.prefer_bus else "walk",
+            route_available=True,
+            warning="公交实时路线尚未接入；当前为公交偏好标记。" if request.prefer_bus else None,
+        ))
+        total_distance += distance
+        total_duration += duration + stop.stay_minutes
+        current = (stop.latitude, stop.longitude)
+        current_id = stop.id
+
+    if request.end_lat is not None and request.end_lon is not None:
+        distance = haversine_m(current, (request.end_lat, request.end_lon))
+        duration = distance / (25 / 3.6 if request.prefer_bus else 5 / 3.6) / 60
+        legs.append(TourLeg(
+            start_stop_id=current_id,
+            end_stop_id="end",
+            distance_m=distance,
+            duration_minutes=duration,
+            mode="bus" if request.prefer_bus else "walk",
+            route_available=True,
+            warning="公交实时路线尚未接入；当前为公交偏好标记。" if request.prefer_bus else None,
+        ))
+        total_distance += distance
+        total_duration += duration
+    if available_minutes is not None and total_duration > available_minutes:
+        warnings.append(f"候选行程约需 {total_duration:.0f} 分钟，超过可用时间 {available_minutes} 分钟。")
+    if request.max_walk_km is not None and total_distance > request.max_walk_km * 1000 and not request.prefer_bus:
+        warnings.append("候选行程超过最大步行距离，确认前需要删减景点。")
+    return TourPlan(
+        intent="plan_tour",
+        purpose=purpose,
+        categories=categories,
+        stops=stops,
+        legs=legs,
+        total_distance_m=total_distance,
+        total_duration_minutes=total_duration,
+        warnings=warnings,
+        source=source,
+    )
+
+
+@app.post("/tour/route", response_model=TourRouteResponse)
+async def route_tour(request: TourRouteRequest) -> TourRouteResponse:
+    """Validate and join each confirmed tour leg using the OSM route engine."""
+    coordinates: list[list[float]] = []
+    legs: list[TourLeg] = []
+    warnings: list[str] = []
+    total_distance = 0.0
+    total_duration = 0.0
+    for index, (start, end) in enumerate(zip(request.stops, request.stops[1:])):
+        try:
+            geojson = geojson_route(RouteRequest(
+                start_lat=start.latitude,
+                start_lon=start.longitude,
+                end_lat=end.latitude,
+                end_lon=end.longitude,
+                prefer_bus=request.prefer_bus,
+                profile=request.profile,
+                max_slope=request.max_slope,
+            ))
+        except (HTTPException, nx.NetworkXNoPath) as exc:
+            detail = exc.detail if isinstance(exc, HTTPException) else "找不到可行步行路线"
+            warnings.append(f"{start.name} → {end.name}：{detail}")
+            legs.append(TourLeg(
+                start_stop_id=start.id,
+                end_stop_id=end.id,
+                distance_m=0,
+                duration_minutes=0,
+                mode="bus" if request.prefer_bus else "walk",
+                route_available=False,
+                warning=str(detail),
+            ))
+            continue
+        feature = geojson["features"][0]
+        leg_coordinates = feature["geometry"]["coordinates"]
+        if coordinates:
+            leg_coordinates = leg_coordinates[1:]
+        coordinates.extend(leg_coordinates)
+        properties = geojson["properties"]
+        distance = float(properties["total_distance"])
+        duration = float(properties["total_time"]) / 60
+        total_distance += distance
+        total_duration += duration + end.stay_minutes
+        legs.append(TourLeg(
+            start_stop_id=start.id,
+            end_stop_id=end.id,
+            distance_m=distance,
+            duration_minutes=duration,
+            mode="bus" if request.prefer_bus else "walk",
+            route_available=True,
+            warning="公交实时路线尚未接入；当前路线为步行路网验证结果。" if request.prefer_bus else None,
+        ))
+    if not coordinates:
+        raise HTTPException(status_code=404, detail="所有行程段都没有可行路线。")
+    return TourRouteResponse(
+        success=not warnings,
+        stops=request.stops,
+        legs=legs,
+        coordinates=coordinates,
+        total_distance_m=total_distance,
+        total_duration_minutes=total_duration,
+        warnings=warnings,
+    )

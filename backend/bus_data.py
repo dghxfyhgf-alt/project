@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,7 @@ import httpx
 DSAT_BASE_URL = "https://bis.dsat.gov.mo:37812/macauweb"
 ROUTE_LIST_PATH = "/ddbus/app/passenger/route"
 STATION_LIST_PATH = "/ddbus/app/passenger/station"
+LOCAL_BUS_DIR = Path(os.getenv("BUS_DATA_DIR", Path(__file__).resolve().parents[1] / "data" / "bus"))
 
 
 class DsatBusClient:
@@ -46,4 +48,25 @@ def cache_public_bus_data(output: Path, language: str = "zh_tw") -> dict[str, An
     payload = DsatBusClient().route_list(language)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return payload
+
+
+def local_bus_routes() -> list[dict[str, Any]]:
+    """Read the operator-supplied, normalized bus snapshot without network access."""
+    path = LOCAL_BUS_DIR / "routes.json"
+    if not path.exists():
+        raise FileNotFoundError(f"Local bus route data was not found: {path}")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, list):
+        raise ValueError("Local bus route data must be a JSON list")
+    return payload
+
+
+def local_bus_stops() -> list[dict[str, Any]]:
+    path = LOCAL_BUS_DIR / "stops.json"
+    if not path.exists():
+        raise FileNotFoundError(f"Local bus stop data was not found: {path}")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, list):
+        raise ValueError("Local bus stop data must be a JSON list")
     return payload

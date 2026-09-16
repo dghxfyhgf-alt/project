@@ -4,7 +4,7 @@ import numpy as np
 import rasterio
 from rasterio.transform import from_origin
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from .graph_builder import build_fallback_graph
 from . import main as main_module
@@ -12,6 +12,7 @@ from .main import app, nearest_edge
 from .bus_data import DsatBusClient
 from .router import shortest_route
 from .terrain import enrich_graph_with_dem
+from .tour import LlmTourSelection
 
 
 def test_health() -> None:
@@ -81,6 +82,102 @@ def test_dsat_bus_client_surfaces_session_requirement() -> None:
             assert "token" in str(exc)
         else:
             raise AssertionError("DSAT session requirement was not reported")
+
+
+def test_local_bus_snapshot_endpoints() -> None:
+    client = TestClient(app)
+    routes = client.get("/bus/routes")
+    stops = client.get("/bus/stops")
+    assert routes.status_code == 200
+    assert routes.json()["source"] == "local_snapshot"
+    assert routes.json()["route_count"] == 117
+    assert stops.status_code == 200
+    assert stops.json()["source"] == "local_snapshot"
+    assert stops.json()["stop_count"] == 286
+
+
+def test_cultural_places_endpoint_has_map_details_and_area_status() -> None:
+    response = TestClient(app).get("/cultural-places")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["count"] == 341
+    assert payload["boundary_mode"] == "official_file"
+    assert {"macau", "nearby"} >= {place["area_status"] for place in payload["places"]}
+    assert any(place["name_en"] for place in payload["places"])
+    assert any(place["area_status"] == "nearby" for place in payload["places"])
+
+
+def test_cultural_places_area_filter() -> None:
+    response = TestClient(app).get("/cultural-places?area=nearby")
+    assert response.status_code == 200
+    assert all(place["area_status"] == "nearby" for place in response.json()["places"])
+
+
+def test_tour_planner_requests_start_before_selecting_stops() -> None:
+    response = TestClient(app).post(
+        "/ai/plan_tour",
+        json={"message": "我想看历史建筑和美食，下午有六小时"},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["needs_clarification"] is True
+    assert payload["stops"] == []
+
+
+def test_tour_planner_returns_stops_and_legs() -> None:
+    response = TestClient(app).post(
+        "/ai/plan_tour",
+        json={
+            "message": "我想看历史建筑和美食，下午有六小时",
+            "start_lat": 22.193,
+            "start_lon": 113.539,
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["intent"] == "plan_tour"
+    assert len(payload["stops"]) > 0
+    assert len(payload["legs"]) == len(payload["stops"])
+    assert payload["needs_confirmation"] is True
+
+
+def test_tour_planner_uses_validated_llm_selection() -> None:
+    selection = LlmTourSelection(
+        purpose="历史建筑深度游",
+        categories=["history"],
+        stop_ids=["ruins_of_st_paul", "monte_fort"],
+        stay_minutes={"ruins_of_st_paul": 35},
+        reasons={"ruins_of_st_paul": "模型根据历史主题选择"},
+    )
+    with patch.object(main_module, "llm_enabled", return_value=True), patch.object(
+        main_module, "select_tour", new=AsyncMock(return_value=selection)
+    ):
+        response = TestClient(app).post(
+            "/ai/plan_tour",
+            json={"message": "我想深入了解澳门历史", "start_lat": 22.193, "start_lon": 113.539},
+        )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["source"] == "llm"
+    assert [stop["id"] for stop in payload["stops"]] == ["ruins_of_st_paul", "monte_fort"]
+    assert payload["stops"][0]["stay_minutes"] == 35
+
+
+def test_tour_route_validates_each_confirmed_leg() -> None:
+    response = TestClient(app).post(
+        "/tour/route",
+        json={
+            "stops": [
+                {"id": "a", "name": "起点", "latitude": 22.193, "longitude": 113.539, "category": "history", "stay_minutes": 10, "reason": "test"},
+                {"id": "b", "name": "终点", "latitude": 22.196, "longitude": 113.541, "category": "history", "stay_minutes": 10, "reason": "test"},
+            ],
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert len(payload["coordinates"]) >= 2
+    assert payload["legs"][0]["route_available"] is True
 
 
 def test_stairs_are_avoided_when_alternative_exists() -> None:

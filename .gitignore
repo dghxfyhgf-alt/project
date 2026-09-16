@@ -24,6 +24,7 @@ cache/
 data/cache/
 backend/data/cache/
 backend/backend/data/
+data/dem.tif
 
 # IDE & OS
 .idea/

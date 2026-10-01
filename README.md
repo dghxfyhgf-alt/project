@@ -106,10 +106,20 @@ python map_downloader.py
 ```bash
 cd frontend
 flutter pub get
-flutter run
+flutter run -d windows
 ```
 
-Note: The frontend connects to `http://10.0.2.2:8000` (Android emulator localhost). Change `_apiBaseUrl` in `main.dart` for other platforms.
+The repository includes the generated `frontend/windows` desktop runner. On
+Windows, double-click `start_backend.bat` to check the Flutter/Visual Studio
+desktop prerequisites, start the backend in a separate console, and launch
+`flutter run -d windows`. The launcher reports the exact missing prerequisite
+if Flutter is not on `PATH`, no Windows Flutter device is available, or Python
+is unavailable. A Windows Flutter device requires Visual Studio's **Desktop
+development with C++** workload and a Windows SDK; verify with `flutter
+doctor -v`.
+
+The frontend uses `http://10.0.2.2:8000` for Android emulator localhost and
+`http://127.0.0.1:8000` for Windows and other desktop targets.
 
 ## Key Features Implemented
 

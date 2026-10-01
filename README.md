@@ -26,6 +26,7 @@ A Python (FastAPI) + Flutter adaptive travel navigation system for Macau with:
 |----------|--------|-------------|
 | `/health` | GET | Health check |
 | `/route/plan` | POST | Plan route with preferences |
+| `/weather/current` | GET | Current SMG weather and rain/bus recommendation |
 | `/ai/parse_intent` | POST | Parse natural language to structured params |
 | `/route/update` | POST | Dynamic re-routing for GPS deviation/weather |
 | `/geocode/search` | GET | Nominatim place search proxy |
@@ -76,6 +77,21 @@ python -m uvicorn main:app --host 0.0.0.0 --port 8000
 The API will be available at `http://localhost:8000`. The supported entry
 points are `uvicorn main:app` from the repository root and
 `uvicorn backend.main:app` from the repository root.
+
+### Weather and rain-aware routing
+
+Weather is read from the official Macau Meteorological and Geophysical Bureau
+(SMG) XML feeds: current conditions from
+`https://xml.smg.gov.mo/p_actual_brief.xml` and forecasts from
+`https://xml.smg.gov.mo/p_forecast.xml`. `GET /weather/current` returns
+`available`, `raining`, `rain_forecast`, and a human-readable
+`recommendation`. When rain is observed or forecast, route planning includes
+the same recommendation in `weather` and
+`geojson.properties.weather_recommendation`: **do not walk; take the bus
+instead**. The app does not silently change the user's bus preference, and
+unavailable or dry weather leaves existing route behavior unchanged. Invalid
+XML, timeouts, and feed failures return an unavailable weather result rather
+than failing route planning.
 
 If `data/macau_network.graphml` is unavailable, the backend automatically uses
 a small offline fallback graph so that the API and frontend can still be
@@ -148,4 +164,16 @@ Replace `_generate_synthetic_bus_data()` with GTFS parser
 Replace `parse_user_intent()` in `main.py` with actual Qwen3 Function Calling
 
 ### Add Weather/Crowd Data
-Implement scheduled fetcher in `main.py` startup and integrate with `/route/update`
+The SMG weather integration lives in `backend/weather.py`; extend its parser
+and keep feed failures non-fatal when adding other official data sources.
+
+## Releases
+
+There is currently no checked-in GitHub Actions release workflow. Releases use
+the existing semantic version tags (latest `v1.2.0`) and GitHub CLI:
+
+```bash
+git tag v1.3.0
+git push origin v1.3.0
+gh release create v1.3.0 --generate-notes
+```

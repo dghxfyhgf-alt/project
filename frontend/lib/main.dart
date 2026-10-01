@@ -52,7 +52,9 @@ class _NavigationPageState extends State<NavigationPage> {
         points
           ..clear()
           ..addAll(coordinates.map((point) => LatLng((point[1] as num).toDouble(), (point[0] as num).toDouble())));
-        status = '距離 ${(data['geojson']['properties']['total_distance'] as num).toStringAsFixed(0)} 公尺';
+        final weather = data['weather'] as Map<String, dynamic>?;
+        final recommendation = weather?['recommendation'] as String?;
+        status = recommendation ?? '距離 ${(data['geojson']['properties']['total_distance'] as num).toStringAsFixed(0)} 公尺';
       });
     } catch (error) {
       setState(() => status = '錯誤：$error');

@@ -11,10 +11,11 @@ from pydantic import BaseModel, Field
 
 from .graph_builder import load_graph
 from .router import haversine_m, shortest_route
+from .weather import fetch_weather
 
 ROOT = Path(__file__).resolve().parents[1]
 GRAPH_PATH = Path(os.getenv("GRAPH_PATH", ROOT / "data" / "macau_network.graphml"))
-app = FastAPI(title="Macau Adaptive Navigation API", version="2.0.0")
+app = FastAPI(title="Macau Adaptive Navigation API", version="2.1.0")
 graph: nx.MultiDiGraph = load_graph(GRAPH_PATH)
 
 
@@ -67,6 +68,7 @@ def geojson_route(request: RouteRequest) -> dict[str, Any]:
         "bus_distance": result.distance if request.prefer_bus else 0,
         "num_transfers": 0,
         "weather_alert": None,
+        "weather_recommendation": None,
         "weight": request.weight,
         "node_count": len(result.nodes),
     }
@@ -88,7 +90,16 @@ async def plan_route(request: RouteRequest) -> dict[str, Any]:
         geojson = geojson_route(request)
     except nx.NetworkXNoPath as exc:
         raise HTTPException(status_code=404, detail="找不到可行路徑") from exc
-    return {"success": True, "geojson": geojson}
+    weather = await fetch_weather()
+    if weather.recommendation:
+        geojson["properties"]["weather_alert"] = weather.recommendation
+        geojson["properties"]["weather_recommendation"] = weather.recommendation
+    return {"success": True, "geojson": geojson, "weather": weather.as_dict()}
+
+
+@app.get("/weather/current")
+async def current_weather() -> dict[str, Any]:
+    return (await fetch_weather()).as_dict()
 
 
 @app.post("/route/update")

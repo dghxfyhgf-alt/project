@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
@@ -32,12 +33,15 @@ class _NavigationPageState extends State<NavigationPage> {
   String status = '輸入起點與終點後規劃路線';
   bool loading = false;
   bool preferBus = false;
+  String get apiBaseUrl => defaultTargetPlatform == TargetPlatform.android
+      ? 'http://10.0.2.2:8000'
+      : 'http://127.0.0.1:8000';
 
   Future<void> plan() async {
     setState(() { loading = true; status = '規劃中...'; });
     try {
       final response = await http.post(
-        Uri.parse('http://10.0.2.2:8000/route/plan'),
+        Uri.parse('$apiBaseUrl/route/plan'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
           'start_lat': double.parse(startLat.text), 'start_lon': double.parse(startLon.text),
@@ -52,7 +56,9 @@ class _NavigationPageState extends State<NavigationPage> {
         points
           ..clear()
           ..addAll(coordinates.map((point) => LatLng((point[1] as num).toDouble(), (point[0] as num).toDouble())));
-        status = '距離 ${(data['geojson']['properties']['total_distance'] as num).toStringAsFixed(0)} 公尺';
+        final weather = data['weather'] as Map<String, dynamic>?;
+        final recommendation = weather?['recommendation'] as String?;
+        status = recommendation ?? '距離 ${(data['geojson']['properties']['total_distance'] as num).toStringAsFixed(0)} 公尺';
       });
     } catch (error) {
       setState(() => status = '錯誤：$error');
@@ -72,7 +78,7 @@ class _NavigationPageState extends State<NavigationPage> {
             SizedBox(width: double.infinity, child: FilledButton(onPressed: loading ? null : plan, child: Text(loading ? '規劃中...' : '規劃路線'))),
             Text(status),
           ])),
-          Expanded(child: FlutterMap(options: MapOptions(initialCenter: const LatLng(22.192, 113.539), initialZoom: 13), children: [
+          Expanded(child: FlutterMap(options: const MapOptions(initialCenter: LatLng(22.192, 113.539), initialZoom: 13), children: [
             TileLayer(urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', userAgentPackageName: 'com.example.macau_navigation'),
             if (points.length > 1) PolylineLayer(polylines: [Polyline(points: points, color: Colors.blue, strokeWidth: 5)]),
           ])),

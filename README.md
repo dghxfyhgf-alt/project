@@ -26,6 +26,7 @@ A Python (FastAPI) + Flutter adaptive travel navigation system for Macau with:
 |----------|--------|-------------|
 | `/health` | GET | Health check |
 | `/route/plan` | POST | Plan route with preferences |
+| `/weather/current` | GET | Current SMG weather and rain/bus recommendation |
 | `/ai/parse_intent` | POST | Parse natural language to structured params |
 | `/route/update` | POST | Dynamic re-routing for GPS deviation/weather |
 | `/geocode/search` | GET | Nominatim place search proxy |
@@ -77,6 +78,21 @@ The API will be available at `http://localhost:8000`. The supported entry
 points are `uvicorn main:app` from the repository root and
 `uvicorn backend.main:app` from the repository root.
 
+### Weather and rain-aware routing
+
+Weather is read from the official Macau Meteorological and Geophysical Bureau
+(SMG) XML feeds: current conditions from
+`https://xml.smg.gov.mo/p_actual_brief.xml` and forecasts from
+`https://xml.smg.gov.mo/p_forecast.xml`. `GET /weather/current` returns
+`available`, `raining`, `rain_forecast`, and a human-readable
+`recommendation`. When rain is observed or forecast, route planning includes
+the same recommendation in `weather` and
+`geojson.properties.weather_recommendation`: **do not walk; take the bus
+instead**. The app does not silently change the user's bus preference, and
+unavailable or dry weather leaves existing route behavior unchanged. Invalid
+XML, timeouts, and feed failures return an unavailable weather result rather
+than failing route planning.
+
 If `data/macau_network.graphml` is unavailable, the backend automatically uses
 a small offline fallback graph so that the API and frontend can still be
 developed and tested. Generate the real Macau graph with:
@@ -90,10 +106,22 @@ python map_downloader.py
 ```bash
 cd frontend
 flutter pub get
-flutter run
+flutter run -d windows
 ```
 
-Note: The frontend connects to `http://10.0.2.2:8000` (Android emulator localhost). Change `_apiBaseUrl` in `main.dart` for other platforms.
+The repository includes the generated `frontend/windows` desktop runner. On
+Windows, double-click `start_backend.bat` to check the Flutter/Visual Studio
+desktop prerequisites, start the backend in a separate console, and launch the
+built `frontend\build\windows\x64\runner\Release\macau_navigation.exe`
+directly. If that executable is missing, it checks the Windows Flutter device,
+runs `flutter build windows`, and then launches the newly built executable. The
+launcher reports the exact missing prerequisite if Flutter is not on `PATH`, no
+Windows Flutter device is available, or Python is unavailable. A Windows
+Flutter device requires Visual Studio's **Desktop development with C++**
+workload and a Windows SDK; verify with `flutter doctor -v`.
+
+The frontend uses `http://10.0.2.2:8000` for Android emulator localhost and
+`http://127.0.0.1:8000` for Windows and other desktop targets.
 
 ## Key Features Implemented
 
@@ -148,4 +176,16 @@ Replace `_generate_synthetic_bus_data()` with GTFS parser
 Replace `parse_user_intent()` in `main.py` with actual Qwen3 Function Calling
 
 ### Add Weather/Crowd Data
-Implement scheduled fetcher in `main.py` startup and integrate with `/route/update`
+The SMG weather integration lives in `backend/weather.py`; extend its parser
+and keep feed failures non-fatal when adding other official data sources.
+
+## Releases
+
+There is currently no checked-in GitHub Actions release workflow. Releases use
+the existing semantic version tags (latest `v1.2.0`) and GitHub CLI:
+
+```bash
+git tag v1.3.0
+git push origin v1.3.0
+gh release create v1.3.0 --generate-notes
+```

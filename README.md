@@ -111,14 +111,15 @@ flutter run -d windows
 
 The repository includes the generated `frontend/windows` desktop runner. On
 Windows, double-click `start_backend.bat` to check the Flutter/Visual Studio
-desktop prerequisites, start the backend in a separate console, and launch the
-built `frontend\build\windows\x64\runner\Release\macau_navigation.exe`
-directly. If that executable is missing, it checks the Windows Flutter device,
-runs `flutter build windows`, and then launches the newly built executable. The
-launcher reports the exact missing prerequisite if Flutter is not on `PATH`, no
-Windows Flutter device is available, or Python is unavailable. A Windows
-Flutter device requires Visual Studio's **Desktop development with C++**
-workload and a Windows SDK; verify with `flutter doctor -v`.
+desktop prerequisites, start or reuse the backend, and launch the built
+`frontend\build\windows\x64\runner\Release\macau_navigation.exe` directly. It
+first health-checks `http://127.0.0.1:8000/health`, so repeated launches do not
+spawn duplicate uvicorn processes. If port 8000 is occupied but the health
+check fails, it reports the listening PID/process and stops with an actionable
+diagnostic. If the executable is missing, it runs `flutter build windows` and
+then launches it. A Windows Flutter device requires Visual Studio's **Desktop
+development with C++** workload and a Windows SDK; verify with `flutter
+doctor -v`.
 
 The frontend uses `http://10.0.2.2:8000` for Android emulator localhost and
 `http://127.0.0.1:8000` for Windows and other desktop targets.
